@@ -40,7 +40,14 @@ namespace PulseRecord.Class
                     {
                         while (reader.Read())
                         {
-                            recipients = reader.GetString(reader.GetOrdinal("disM_Detalles"));
+                            if (!reader.IsDBNull(reader.GetOrdinal("disM_Detalles")))
+                            {
+                                recipients = reader.GetString(reader.GetOrdinal("disM_Detalles"));
+                            }
+                            else
+                            {
+                                recipients = "";
+                            }
                         }
                     }
                 }

@@ -47,11 +47,12 @@ namespace PulseRecord
                 // Obtener todos los archivos CSV en el directorio
                 var csvFiles = Directory.GetFiles(directoryPath, "*.csv");
 
+                var recipients = EmailService.GetEmailRecipients();
+
                 foreach (var filePath in csvFiles)
                 {
                     try
                     {
-                        var recipients = EmailService.GetEmailRecipients();
 
                         using (var reader = new StreamReader(filePath))
                         {
@@ -107,6 +108,7 @@ namespace PulseRecord
         {
             Boolean SiFalla = false;
             var record = new CSVRecord();
+            var CSVheader = GetHeaderMappings();
             string line;
 
             // Leer el encabezado
@@ -122,31 +124,46 @@ namespace PulseRecord
                 var parts = line.Split(new[] { ":," }, StringSplitOptions.None);
 
                 if (parts.Length < 2) continue;
+                string header = parts[0].Trim();
+                string value = parts[1].Trim('"');
 
-                switch (parts[0].Trim())
+                // Verifica si el encabezado existe en el mapeo
+                if (CSVheader.ContainsKey(header))
                 {
-                    case "Cal. Date":
-                        record.CalDate = parts[1].Trim('"');
-                        break;
-                    case "Equipo":
-                        record.Equipo = parts[1].Trim('"');
-                        break;
-                    case "Inspector":
-                        record.Inspector = parts[1].Trim('"');
-                        break;
-                    case "Lado":
-                        record.Lado = parts[1].Trim('"');
-                        break;
-                    case "Lote":
-                        record.Lote = parts[1].Trim('"');
-                        break;
-                    case "Numero De Parte":
-                        record.NumeroDeParte = parts[1].Trim('"');
-                        break;
-                    case "Sello Pel":
-                        record.SelloPel = parts[1].Trim('"');
-                        break;
+                    string propertyName = CSVheader[header];
+
+                    // Usar reflexión para asignar el valor al campo correspondiente
+                    var property = typeof(CSVRecord).GetProperty(propertyName);
+                    if (property != null)
+                    {
+                        property.SetValue(record, value);
+                    }
                 }
+
+                //switch (parts[0].Trim())
+                //{
+                //    case "Cal. Date":
+                //        record.CalDate = parts[1].Trim('"');
+                //        break;
+                //    case "Equipo":
+                //        record.Equipo = parts[1].Trim('"');
+                //        break;
+                //    case "Inspector":
+                //        record.Inspector = parts[1].Trim('"');
+                //        break;
+                //    case "Lado":
+                //        record.Lado = parts[1].Trim('"');
+                //        break;
+                //    case "Lote":
+                //        record.Lote = parts[1].Trim('"');
+                //        break;
+                //    case "Numero De Parte":
+                //        record.NumeroDeParte = parts[1].Trim('"');
+                //        break;
+                //    case "Sello Pel":
+                //        record.SelloPel = parts[1].Trim('"');
+                //        break;
+                //}
             }
             var minMaxValores = ObtenerMinMaxValores(record.NumeroDeParte);
 
@@ -181,18 +198,33 @@ namespace PulseRecord
                 results.Add(resultRecord);
             }
 
-            
+
+            // Validar si alguna propiedad no tiene valor
+            if (!ValidateRecord(record))
+            {
+                Console.WriteLine("Falta información en el CSV. Creando Log...");
+                LogEvent("INFO", "Faltan datos en el archivo CSV. El archivo CSV no contiene todos los campos requeridos.", " | #Parte: " + record.NumeroDeParte + " | Lote: " + record.Lote);
+            }
+
             // Agregar los resultados al record
             record.Results = results;
-
 
             SaveValues(record);
 
             if (SiFalla)
             {
+                //Validar falta de lista de distribucion
                 var emailSubject = "PulseRecord App - Notificación de pruebas con fallas";
+                if(recipient is not "")
+                {
+                    EmailService.SendEmailWithCsvData(recipient, emailSubject, results, record);
+                }
+                else
+                {
+                    LogEvent("INFO", "No se encontraron correos en lista de distribución. No es posible enviar correo.", " | #Parte: " + record.NumeroDeParte + " | Lote: " + record.Lote);
+                }
 
-                EmailService.SendEmailWithCsvData(recipient, emailSubject, results ,record);
+                
             }
             
 
@@ -312,6 +344,64 @@ namespace PulseRecord
             }
 
             return minMaxValores;
+        }
+
+        public static Dictionary<string, string> GetHeaderMappings()
+        {
+            var mappings = new Dictionary<string, string>();
+            string query = "SP_PulseRecord";
+
+            // Configurar el cargador de configuración para leer desde appsettings.json
+            var builder = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetCurrentDirectory())
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
+
+            IConfiguration config = builder.Build();
+
+            // Leer la cadena de conexión
+            string connectionString = config.GetConnectionString("API");
+
+            using (SqlConnection conn = new SqlConnection(connectionString))
+            {
+                conn.Open();
+                using (SqlCommand cmd = new SqlCommand(query, conn))
+                {
+                    cmd.CommandType = System.Data.CommandType.StoredProcedure;
+                    cmd.Parameters.AddWithValue("@Option", "Obtener_CSVEncabezados");
+
+                    using (SqlDataReader reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            string header = reader["HeaderName"].ToString();
+                            string property = reader["PropertyName"].ToString();
+                            mappings[header] = property;
+                        }
+                    }
+                }
+            }
+
+            return mappings;
+        }
+
+        public bool ValidateRecord(CSVRecord record)
+        {
+            var properties = typeof(CSVRecord).GetProperties();
+
+            foreach (var prop in properties)
+            {
+                // Obtiene el valor de la propiedad
+                var value = prop.GetValue(record)?.ToString();
+
+                // Verifica si la propiedad es nula o está vacía
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    Console.WriteLine($"La propiedad {prop.Name} no tiene un valor asignado.");
+                    return false; // Si alguna propiedad no tiene valor, devuelve falso
+                }
+            }
+
+            return true; // Si todas las propiedades tienen valor, devuelve verdadero
         }
     }
 }
